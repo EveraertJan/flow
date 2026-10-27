@@ -497,6 +497,77 @@ function doorField(nv, d) {
   return f;
 }
 
+// Viewing spots spread along an element's viewing band (about one per 2.5 m), in walking order.
+function elSpots(nv, el) {
+  const key = 's' + el.id;
+  let sp = nv.fields.get(key);
+  if (sp) return sp;
+  const f = elField(nv, el), band = [];
+  for (let k = 0; k < f.dist.length; k++) if (f.dist[k] === 0) { const i = k % nv.W, j = (k - i) / nv.W; band.push([nv.ox + (i + 0.5) * CELL, nv.oy + (j + 0.5) * CELL]); }
+  const depth = (el.near || 0) > 0 || el.solid ? 0.9 : 0.4;
+  const K = band.length ? clamp(Math.round(band.length * CELL * CELL / depth / 2.5), 1, 8) : 0;
+  const pick = [];
+  if (K) {
+    // farthest-point sampling: spread the spots out
+    let far = band[0], fd = -1;
+    for (const q of band) { const d = Math.hypot(q[0] - band[0][0], q[1] - band[0][1]); if (d > fd) { fd = d; far = q; } }
+    pick.push(far);
+    const md = band.map(q => Math.hypot(q[0] - far[0], q[1] - far[1]));
+    while (pick.length < K) {
+      let bi = 0;
+      for (let i = 1; i < band.length; i++) if (md[i] > md[bi]) bi = i;
+      const q = band[bi]; pick.push(q);
+      for (let i = 0; i < band.length; i++) md[i] = Math.min(md[i], Math.hypot(band[i][0] - q[0], band[i][1] - q[1]));
+    }
+    // order them around the element, cutting at the widest gap (so an open band runs end to end)
+    const ang = pick.map(q => [Math.atan2(q[1] - el.y, q[0] - el.x), q]).sort((p, q) => p[0] - q[0]);
+    let gap = -1, cut = 0;
+    for (let i = 0; i < ang.length; i++) { const nxt = i + 1 < ang.length ? ang[i + 1][0] : ang[0][0] + 2 * Math.PI; if (nxt - ang[i][0] > gap) { gap = nxt - ang[i][0]; cut = (i + 1) % ang.length; } }
+    pick.length = 0;
+    for (let i = 0; i < ang.length; i++) pick.push(ang[(cut + i) % ang.length][1]);
+  }
+  sp = { spots: pick.map(q => ({ x: q[0], y: q[1] })), closed: !hasViews(el), fields: [] };
+  nv.fields.set(key, sp);
+  return sp;
+}
+function spotField(nv, el, i) {
+  const sp = elSpots(nv, el);
+  if (!sp.fields[i]) {
+    const s = sp.spots[i], ef = elField(nv, el);
+    sp.fields[i] = buildField(nv, (x, y) => Math.hypot(x - s.x, y - s.y) <= 0.6 && distAt(nv, ef, x, y) === 0);
+  }
+  return sp.fields[i];
+}
+
+// Arriving at an element. Bigger ones are explored: a stroll past a few neighbouring spots.
+function startVisit(a, el, nv, cur) {
+  sim.viewers.set(el.id, (sim.viewers.get(el.id) || 0) + 1);
+  elStat(el.id).visits++;
+  a.state = 'dwell'; a.look = el.id; a.lookPt = lookPoint(el, a.x, a.y);
+  const total = el.dwell * (0.4 + cur * 1.2) * rand(0.6, 1.4);
+  const sp = elSpots(nv, el), K = sp.spots.length;
+  a.tour = null;
+  if (K <= 1) { a.dwell = total; return; }
+  let m = clamp(Math.round(K * (0.3 + 0.7 * cur) * rand(0.7, 1.3)), 1, K);
+  let s0 = 0, bd = Infinity;
+  sp.spots.forEach((q, i) => { const d = Math.hypot(q.x - a.x, q.y - a.y); if (d < bd) { bd = d; s0 = i; } });
+  let dir = Math.random() < 0.5 ? 1 : -1;
+  if (!sp.closed) {   // an open band: head towards the longer end
+    if (dir > 0 && K - 1 - s0 < s0) dir = -1; else if (dir < 0 && s0 < K - 1 - s0) dir = 1;
+    m = Math.min(m, dir > 0 ? K - s0 : s0 + 1);
+  }
+  const seq = [];
+  for (let j = 0; j < m; j++) seq.push(((s0 + dir * j) % K + K) % K);
+  const per = total * (0.7 + 0.3 * m) / m;
+  a.tour = { el: el.id, seq, i: 0, per };
+  a.dwell = per;
+}
+function endVisit(a, el) {
+  if (el) a.visited.add(el.id);
+  a.plan = a.plan.filter(id => id !== a.look);
+  a.state = 'walk'; a.target = null; a.look = null; a.tour = null;
+}
+
 function cellAt(nv, x, y) {
   const i = Math.floor((x - nv.ox) / CELL), j = Math.floor((y - nv.oy) / CELL);
   if (i < 0 || j < 0 || i >= nv.W || j >= nv.H) return -1;
@@ -575,7 +646,7 @@ function enterRoom(a, door) {
     a.x = p[0]; a.y = p[1];
   }
   a.room = room.id; a.entry = door.id; a.leftEntry = false; a.enterT = sim.t; a.rooms++; a.prog = null; a.stuck = 0;
-  a.plan = []; a.seen = new Set(); a.visited = new Set(); a.state = 'walk'; a.target = null; a.look = null;
+  a.plan = []; a.seen = new Set(); a.visited = new Set(); a.state = 'walk'; a.target = null; a.look = null; a.tour = null;
   a.h = Math.atan2(g.ny, g.nx); a.vx = g.nx * a.speed * 0.6; a.vy = g.ny * a.speed * 0.6;
   const cur = doc.settings.curiosity;
   for (const el of nv.els) if (Math.random() < clamp(cur * (el.attr / 10) * 0.9, 0, 0.95)) a.plan.push(el.id);
@@ -593,6 +664,7 @@ function unstick(a, nv) {
   let f = null;
   if (t && t.kind === 'exit') { const d = doorById(t.id); if (d && d.room === a.room) f = doorField(nv, d); }
   if (t && t.kind === 'el') { const el = nv.els.find(e => e.id === t.id); if (el) f = elField(nv, el); }
+  if (t && t.kind === 'spot' && a.tour) { const el = nv.els.find(e => e.id === t.id); if (el && a.tour.seq[a.tour.i] < elSpots(nv, el).spots.length) f = spotField(nv, el, a.tour.seq[a.tour.i]); }
   if (f && k >= 0) {
     // wedged behind something: take one step to the best neighbouring cell
     const i = k % nv.W, j = (k - i) / nv.W;
@@ -611,6 +683,8 @@ function unstick(a, nv) {
     if (a.stuck >= 3) { a.leftEntry = true; chooseExit(a, nv, t.id); a.target = null; }
   } else if (t && t.kind === 'el') {
     if (a.stuck >= 2) { a.visited.add(t.id); a.plan = a.plan.filter(id => id !== t.id); a.target = null; }
+  } else if (t && t.kind === 'spot') {
+    if (a.stuck >= 2) endVisit(a, elById(t.id));
   } else a.target = null;
   return null;
 }
@@ -670,7 +744,7 @@ function stepAgent(a, dt, cur) {
   }
 
   // noticing things on the way
-  if (a.state === 'walk' && cur > 0) {
+  if (a.state === 'walk' && cur > 0 && !a.tour) {
     for (const el of nv.els) {
       if (a.visited.has(el.id) || a.seen.has(el.id) || a.plan.includes(el.id)) continue;
       const R = noticeR(el);
@@ -688,10 +762,10 @@ function stepAgent(a, dt, cur) {
     a.dwell -= dt;
     const el = elById(a.look);
     if (el) elStat(el.id).dwell += dt;
-    if (!el || a.dwell <= 0 || elRoomId(el) !== a.room) {
-      if (el) a.visited.add(el.id);
-      a.plan = a.plan.filter(id => id !== a.look);
-      a.state = 'walk'; a.target = null; a.look = null;
+    if (!el || elRoomId(el) !== a.room) endVisit(a, el);
+    else if (a.dwell <= 0) {
+      if (a.tour && a.tour.i < a.tour.seq.length - 1) { a.tour.i++; a.state = 'walk'; a.target = { kind: 'spot', id: el.id }; }
+      else endVisit(a, el);
     } else {
       const lp = a.lookPt || [el.x, el.y];
       const want = Math.atan2(lp[1] - a.y, lp[0] - a.x) + Math.sin(sim.t * 0.6 + a.id * 1.7) * 0.4;
@@ -711,13 +785,20 @@ function stepAgent(a, dt, cur) {
         const f = elField(nv, el), dh = distAt(nv, f, a.x, a.y);
         if (dh === 0 && (sim.viewers.get(el.id) || 0) >= capacity(el)) {
           a.visited.add(el.id); a.plan = a.plan.filter(id => id !== el.id); a.target = null;   // arrived, too busy
-        } else if (dh === 0) {
-          sim.viewers.set(el.id, (sim.viewers.get(el.id) || 0) + 1);
-          a.state = 'dwell'; a.look = el.id; a.lookPt = lookPoint(el, a.x, a.y);
-          a.dwell = el.dwell * (0.4 + cur * 1.2) * rand(0.6, 1.4);
-          elStat(el.id).visits++;
-        } else if (!(dh < Infinity)) { a.target = null; a.plan = a.plan.filter(id => id !== t.id); }
+        } else if (dh === 0) startVisit(a, el, nv, cur);
+        else if (!(dh < Infinity)) { a.target = null; a.plan = a.plan.filter(id => id !== t.id); }
         else { [gx, gy] = dirAt(nv, f, a.x, a.y); sp *= clamp(0.35 + dh / 1.5, 0.35, 1); }
+      }
+    } else if (t.kind === 'spot') {
+      const el = nv.els.find(e => e.id === t.id), tr = a.tour;
+      const spots = el && elSpots(nv, el), si = tr ? tr.seq[tr.i] : -1;
+      if (!el || !tr || si >= spots.spots.length) endVisit(a, el);
+      else {
+        elStat(el.id).dwell += dt;
+        const f = spotField(nv, el, si), dh = distAt(nv, f, a.x, a.y);
+        if (dh === 0) { a.state = 'dwell'; a.dwell = tr.per; a.lookPt = lookPoint(el, a.x, a.y); }
+        else if (!(dh < Infinity)) endVisit(a, el);
+        else { [gx, gy] = dirAt(nv, f, a.x, a.y); sp *= 0.55; wander = 0.08; }
       }
     } else if (t.kind === 'exit') {
       const d = doorById(t.id), g = d && doorG(d);
@@ -744,7 +825,13 @@ function stepAgent(a, dt, cur) {
     if (m > 1e-6) { dx /= m; dy /= m; }
   }
 
-  const tvx = dx * sp + a.sx, tvy = dy * sp + a.sy;
+  // the crowd can slow you down, but never fully stop you
+  let sx = a.sx, sy = a.sy;
+  if (a.state === 'walk' && (dx || dy)) {
+    const along = sx * dx + sy * dy, lim = -0.6 * sp;
+    if (along < lim) { sx += dx * (lim - along); sy += dy * (lim - along); }
+  }
+  const tvx = dx * sp + sx, tvy = dy * sp + sy;
   const bl = Math.min(1, dt * 5);
   a.vx += (tvx - a.vx) * bl; a.vy += (tvy - a.vy) * bl;
   const nx = a.x + a.vx * dt, ny = a.y + a.vy * dt;
@@ -760,15 +847,17 @@ function stepAgent(a, dt, cur) {
   else { a.vx *= 0.2; a.vy *= 0.2; }
   if (a.state === 'walk') {
     const v = Math.hypot(a.vx, a.vy);
-    if (v > 0.08) a.h = turn(a.h, Math.atan2(a.vy, a.vx), dt * 6);
+    if (a.tour) { const el = elById(a.tour.el); if (el) { const lp = lookPoint(el, a.x, a.y); a.h = turn(a.h, Math.atan2(lp[1] - a.y, lp[0] - a.x), dt * 3); } }
+    else if (v > 0.08) a.h = turn(a.h, Math.atan2(a.vy, a.vx), dt * 6);
     // stuck? (jammed in a doorway, wedged on a corner, or the plan changed under their feet)
     if (!a.prog) a.prog = { x: a.x, y: a.y, t: sim.t };
-    if (Math.hypot(a.x - a.prog.x, a.y - a.prog.y) > 0.4) { a.prog = { x: a.x, y: a.y, t: sim.t }; a.stuck = 0; }
+    if (Math.hypot(a.x - a.prog.x, a.y - a.prog.y) > 0.4) { a.prog = { x: a.x, y: a.y, t: sim.t }; a.stuck = Math.max(0, (a.stuck || 0) - 1); }
     else if (sim.t - a.prog.t > 4) {
       a.prog.t = sim.t;
       a.stuck = (a.stuck || 0) + 1;
       const d = unstick(a, nv);
       if (d) return exitAgent(a, d);
+      a.prog = { x: a.x, y: a.y, t: sim.t };   // the nudge itself is not progress
     }
   } else a.prog = null;
   const h = sim.heat;
@@ -833,7 +922,7 @@ function simStep(dt) {
   }
   separation();
   sim.viewers = new Map();
-  for (const a of sim.agents) if (a.state === 'dwell') sim.viewers.set(a.look, (sim.viewers.get(a.look) || 0) + 1);
+  for (const a of sim.agents) if (a.state === 'dwell' || a.tour) sim.viewers.set(a.look, (sim.viewers.get(a.look) || 0) + 1);
   const cur = S.curiosity;
   const keep = [];
   for (const a of sim.agents) if (stepAgent(a, dt, cur)) keep.push(a);
@@ -915,7 +1004,7 @@ function roomCounts() {
   for (const a of sim.agents) m.set(a.room, (m.get(a.room) || 0) + 1);
   return m;
 }
-function viewersOf(id) { let n = 0; for (const a of sim.agents) if (a.state === 'dwell' && a.look === id) n++; return n; }
+function viewersOf(id) { let n = 0; for (const a of sim.agents) if ((a.state === 'dwell' || a.tour) && a.look === id) n++; return n; }
 
 function drawGrid(c, v, W, H) {
   let step = PX * v.z;
@@ -982,6 +1071,13 @@ function drawScene(c, v, W, H, o) {
       // reach: a soft band around it
       c.save(); c.strokeStyle = 'rgba(0,0,0,0.045)'; c.lineJoin = 'round'; c.lineWidth = noticeR(e) * 2; elPath(c, e); c.stroke(); c.restore();
       c.save(); c.translate(6 * u, 6 * u); elPath(c, e); c.fillStyle = ACCENT; c.fill(); c.restore();
+      const er = roomById(elRoomId(e));
+      if (er) {   // viewing spots
+        const spots = elSpots(getNav(er), e).spots;
+        c.save(); c.fillStyle = '#000';
+        spots.forEach((q, i) => { c.beginPath(); c.arc(q.x, q.y, 2.5 * u, 0, Math.PI * 2); c.fill(); });
+        c.restore();
+      }
       if (e.near > 0) {   // where viewing starts
         c.save(); c.setLineDash([4 * u, 4 * u]); c.strokeStyle = '#000'; c.lineWidth = 1 * u; c.lineCap = 'butt';
         c.beginPath();
@@ -1053,7 +1149,7 @@ function drawScene(c, v, W, H, o) {
     if (o.cones) {
       for (const a of live) {
         c.save(); c.translate(a.x, a.y); c.rotate(a.h);
-        c.drawImage(a.state === 'dwell' ? CONE.accent : CONE.ink, 0, -CONE_L / 2, CONE_L, CONE_L);
+        c.drawImage(a.state === 'dwell' || a.tour ? CONE.accent : CONE.ink, 0, -CONE_L / 2, CONE_L, CONE_L);
         c.restore();
       }
     }
@@ -1144,6 +1240,12 @@ function agentGoalPoint(a) {
   if (a.state === 'dwell') { const el = elById(a.look); return el ? [el.x, el.y] : null; }
   if (!a.target) return null;
   if (a.target.kind === 'el') { const el = elById(a.target.id); return el ? [el.x, el.y] : null; }
+  if (a.target.kind === 'spot' && a.tour) {
+    const el = elById(a.target.id), room = roomById(a.room);
+    if (!el || !room) return null;
+    const q = elSpots(getNav(room), el).spots[a.tour.seq[a.tour.i]];
+    return q ? [q.x, q.y] : null;
+  }
   if (a.target.kind === 'exit') { const d = doorById(a.target.id), g = d && doorG(d); return g ? [g.mx, g.my] : null; }
   return null;
 }
@@ -1670,7 +1772,11 @@ let tipPos = [0, 0];
 function agentInfo(a) {
   const room = roomById(a.room);
   let what = 'WANDERING';
-  if (a.state === 'dwell') { const el = elById(a.look); what = 'LOOKING AT ' + (el ? el.name.toUpperCase() : '…'); }
+  if (a.state === 'dwell' || a.tour) {
+    const el = elById(a.look);
+    what = (a.state === 'dwell' ? 'LOOKING AT ' : 'WALKING ALONG ') + (el ? el.name.toUpperCase() : '…');
+    if (a.tour && a.tour.seq.length > 1) what += ` (${a.tour.i + 1}/${a.tour.seq.length})`;
+  }
   else if (a.target && a.target.kind === 'el') { const el = elById(a.target.id); what = 'GOING TO ' + (el ? el.name.toUpperCase() : '…'); }
   else if (a.target && a.target.kind === 'exit') {
     const d = doorById(a.target.id);
@@ -1778,10 +1884,11 @@ function buildInspector() {
     h += fieldRange('VIEWING TIME', 'dwell', o.dwell, 0, 300, 5, 'sec');
     h += fieldRange('MIN DISTANCE', 'near', o.near || 0, 0, 8, 0.1, 'm');
     h += fieldSeg('BLOCKS WALKING', 'solid', o.solid, [['true', 'YES'], ['false', 'NO']]);
-    h += `<div class="stats">${stat('Looking now', 0, 'el-now')}${stat('Visits', 0, 'el-visits')}${stat('Avg look', '–', 'el-avg')}${stat('Reach', noticeR(o).toFixed(1) + ' m', 'el-reach')}${stat('Fits', capacity(o) + ' people', 'el-cap')}</div>`;
+    h += `<div class="stats">${stat('Looking now', 0, 'el-now')}${stat('Visits', 0, 'el-visits')}${stat('Avg look', '–', 'el-avg')}${stat('Reach', noticeR(o).toFixed(1) + ' m', 'el-reach')}${stat('Fits', capacity(o) + ' people', 'el-cap')}${stat('Viewing spots', '–', 'el-spots')}</div>`;
     h += `<p class="note">Drag a corner to reshape. Drag a + to add a corner. Double-click a corner to remove it. Click VIEW next to a side to make it a viewing side: people stand in front of it and look at it.</p>`;
     h += `<p class="note">Attraction sets how far away people notice it and how many go and look. The grey band shows its reach. When it's full, people skip it.</p>`;
     h += `<p class="note">Min distance keeps people back, like a screen or a big canvas. The dashed line shows where they start standing. If there's no room for that, people skip it.</p>`;
+    h += `<p class="note">Bigger elements get several viewing spots. People stroll past a few of them, more when they're curious, and share their viewing time between them.</p>`;
   }
   if (kind === 'label') {
     h += `<div class="field"><div class="field-top"><span class="label">TEXT</span><span class="val muted">ENTER = NEW LINE</span></div><textarea data-k="text" rows="3" maxlength="400">${esc(o.text)}</textarea></div>`;
@@ -1880,6 +1987,8 @@ function updateLive() {
     set('el-now', viewersOf(o.id));
     set('el-visits', s ? s.visits : 0);
     set('el-avg', s && s.visits ? fmtTime(s.dwell / s.visits) : '–');
+    const room = roomById(elRoomId(o));
+    set('el-spots', room ? elSpots(getNav(room), o).spots.length : '–');
   }
 }
 
@@ -2063,7 +2172,7 @@ function exportSVG() {
   if (live.length) {
     o.push(`<g id="audience">`);
     const L = CONE_L * PX, hw = L * 52 / 128;
-    if (showCones) for (const a of live) o.push(`<path transform="translate(${f(a.x)} ${f(a.y)}) rotate(${(a.h * 180 / Math.PI).toFixed(1)})" d="M0 0L${L.toFixed(2)} ${(-hw).toFixed(2)}L${L.toFixed(2)} ${hw.toFixed(2)}Z" fill="url(#${a.state === 'dwell' ? 'cone-a' : 'cone'})"/>`);
+    if (showCones) for (const a of live) o.push(`<path transform="translate(${f(a.x)} ${f(a.y)}) rotate(${(a.h * 180 / Math.PI).toFixed(1)})" d="M0 0L${L.toFixed(2)} ${(-hw).toFixed(2)}L${L.toFixed(2)} ${hw.toFixed(2)}Z" fill="url(#${a.state === 'dwell' || a.tour ? 'cone-a' : 'cone'})"/>`);
     for (const a of live) o.push(`<circle cx="${f(a.x)}" cy="${f(a.y)}" r="${f(AGENT_R)}" fill="#111" stroke="#fff" stroke-width="1"><title>#${String(a.id).padStart(4, '0')}</title></circle>`);
     o.push(`</g>`);
   }
