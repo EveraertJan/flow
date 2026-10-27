@@ -1,0 +1,143 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Flow — Tastbaar</title>
+<script>
+  (function () {
+    const picks = ["#f00", "#0f0", "#00f", "#ff0", "#0ff", "#f0f"];
+    const accent = picks[Math.floor(Math.random() * picks.length)];
+    const paint = "#" + [...accent.slice(1)].map(c => (c === "f" ? "0" : "f")).join("");
+    const ink = (accent === "#00f" || accent === "#f00") ? "#fff" : "#000";
+    const root = document.documentElement.style;
+    root.setProperty("--accent", accent);
+    root.setProperty("--accent-paint", paint);
+    root.setProperty("--accent-ink", ink);
+    window.TB_ACCENT = accent;
+  })();
+</script>
+<link rel="stylesheet" href="flow.css">
+</head>
+<body>
+
+<div id="brand-title" aria-hidden="true"><span>FLOW</span></div>
+
+<header id="toolbar">
+  <a class="logo" href="https://tastbaar.studio" target="_blank" rel="noopener"><img src="images/logo.svg" alt="Tastbaar" onerror="this.parentNode.style.display='none'"></a>
+  <span id="project-name" class="label" data-tip="Click to rename">UNTITLED</span>
+  <span class="sep"></span>
+  <div class="group tools">
+    <button class="btn on" data-tool="select" data-tip="Select and move (V)">SELECT</button>
+    <button class="btn" data-tool="room" data-tip="Drag to draw a room (R)">ROOM</button>
+    <button class="btn" data-tool="door" data-tip="Click a wall to add a door (D)">DOOR</button>
+    <button class="btn" data-tool="arrow" data-tip="Drag to set the flow (A)">ARROW</button>
+    <button class="btn" data-tool="element" data-tip="Click to place an element (E)">ELEMENT</button>
+    <button class="btn" data-tool="link" data-tip="Drag from an exit to an entrance (L)">LINK</button>
+    <button class="btn" data-tool="label" data-tip="Click to place a label (T)">LABEL</button>
+  </div>
+  <span class="sep"></span>
+  <div class="group edit">
+    <button class="btn on" id="btn-snap" data-tip="Snap to half a metre">SNAP</button>
+    <button class="btn" id="btn-undo" data-tip="Undo (Ctrl Z)">UNDO</button>
+    <button class="btn" id="btn-redo" data-tip="Redo (Ctrl Shift Z)">REDO</button>
+    <button class="btn" id="btn-fit" data-tip="Fit to screen (F)">FIT</button>
+  </div>
+  <div class="spacer"></div>
+  <div class="group" id="file-actions">
+    <button class="btn" id="btn-help" data-tip="About Flow">?</button>
+    <button class="btn" id="btn-new" data-tip="Start empty">NEW</button>
+    <button class="btn" id="btn-load" data-tip="Open a .json file">LOAD</button>
+    <button class="btn" id="btn-save" data-tip="Save as .json (Ctrl S)">SAVE</button>
+    <button class="btn" id="btn-png" data-tip="Export image">PNG</button>
+    <button class="btn" id="btn-svg" data-tip="Export vector">SVG</button>
+  </div>
+  <input type="file" id="file-input" accept=".json,application/json" hidden>
+</header>
+
+<canvas id="stage"></canvas>
+
+<aside id="sim-panel" class="panel">
+  <div class="panel-head">
+    <span class="label" id="sim-toggle">SIMULATION</span>
+    <span class="counter" id="sim-clock">00:00</span>
+  </div>
+  <div class="panel-body">
+    <div class="row play-row">
+      <button class="btn primary" id="btn-play">PLAY</button>
+      <button class="btn" id="btn-reset">RESET</button>
+      <span class="seg speed" id="speed">
+        <button class="btn on" data-speed="1">1×</button>
+        <button class="btn" data-speed="4">4×</button>
+        <button class="btn" data-speed="16">16×</button>
+      </span>
+    </div>
+    <p class="note warn hidden" id="sim-note"></p>
+
+    <div class="field">
+      <div class="field-top"><span class="label">VISITORS</span><span class="val" id="v-rate"></span></div>
+      <input type="range" id="in-rate" min="0" max="120" step="1">
+    </div>
+    <div class="field">
+      <div class="field-top"><span class="label">TOTAL</span><span class="val muted">0 = NO LIMIT</span></div>
+      <input type="number" id="in-total" min="0" step="10">
+    </div>
+    <div class="field">
+      <div class="field-top"><span class="label">PACE</span><span class="val" id="v-pace"></span></div>
+      <input type="range" id="in-pace" min="0.4" max="1.6" step="0.05">
+    </div>
+    <div class="field">
+      <div class="field-top"><span class="label">CURIOSITY</span><span class="val" id="v-cur"></span></div>
+      <input type="range" id="in-cur" min="0" max="1" step="0.05">
+    </div>
+
+    <div class="row show-row">
+      <span class="muted">SHOW</span>
+      <button class="btn" id="btn-heat" data-tip="Where people spent time (H)">HEAT</button>
+      <button class="btn on" id="btn-cones" data-tip="Viewing direction">VIEW</button>
+    </div>
+
+    <div class="divider"></div>
+    <div class="stats">
+      <div class="stat"><span class="k">In space</span><span class="v" id="s-now">0</span></div>
+      <div class="stat"><span class="k">Peak</span><span class="v" id="s-peak">0</span></div>
+      <div class="stat"><span class="k">Entered</span><span class="v" id="s-in">0</span></div>
+      <div class="stat"><span class="k">Left</span><span class="v" id="s-out">0</span></div>
+      <div class="stat"><span class="k">Avg stay</span><span class="v" id="s-stay">–</span></div>
+      <div class="stat"><span class="k">Per hour</span><span class="v" id="s-hour">–</span></div>
+    </div>
+  </div>
+</aside>
+
+<aside id="inspector" class="panel hidden"></aside>
+
+<div id="hint"></div>
+<div id="meta"></div>
+<div id="tip" class="tip hidden"></div>
+<div id="toast" class="tip hidden"></div>
+
+<div id="welcome" class="veil hidden">
+  <div class="frame welcome">
+    <div class="welcome-bar"><span class="label">TOOL</span><span class="muted">BY TASTBAAR</span></div>
+    <div class="welcome-body">
+      <h1 class="big-title">FLOW</h1>
+      <p class="lead">Feel how people move through your space before anyone walks in.</p>
+      <ol class="steps">
+        <li><b>Draw rooms.</b> Drag the corners. Pull a + to bend a wall.</li>
+        <li><b>Set the doors.</b> Mark where people come in and where they leave. Link an exit to the next room.</li>
+        <li><b>Guide and tempt.</b> Arrows set the general flow. Elements pull people closer.</li>
+        <li><b>Let them in.</b> Choose how many, how fast and how curious. Press PLAY.</li>
+      </ol>
+      <div class="row">
+        <button class="btn primary" data-act="start">START</button>
+        <button class="btn" data-act="example">OPEN EXAMPLE</button>
+        <button class="btn" data-act="empty">START EMPTY</button>
+      </div>
+      <p class="signoff">Ideas are nice. Tangible is better.</p>
+    </div>
+  </div>
+</div>
+
+<script src="flow.js"></script>
+</body>
+</html>
