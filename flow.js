@@ -54,14 +54,14 @@ function exampleDoc() {
   d.doors.push({ id: 'd_sp', room: 'r_side', edge: 3, t: 0.5, w: 1.4, type: 'pass' });
   d.links.push({ id: 'l_2', from: 'd_gp', to: 'd_sp' });
   // edges of a rectangle: 0 top, 1 right, 2 bottom, 3 left
-  const el = (id, name, pts, attr, dwell, views = [], solid = true) => d.elements.push(syncEl({ id, name, pts, attr, dwell, views, solid }));
+  const el = (id, name, pts, attr, dwell, views = [], solid = true, near = 0) => d.elements.push(syncEl({ id, name, pts, attr, dwell, views, solid, near }));
   el('e_tix', 'Tickets', rectPts(4, 2.2, 3, 1), 3, 15, [2]);
-  el('e_intro', 'Intro screen', rectPts(9.5, 9.6, 3, 0.3), 6, 30, [0]);
-  el('e_pa', 'Painting A', rectPts(21.5, -3.75, 3, 0.2), 7, 25, [2]);
-  el('e_pb', 'Painting B', rectPts(30, -3.75, 3, 0.2), 5, 20, [2]);
+  el('e_intro', 'Intro screen', rectPts(9.5, 9.6, 3, 0.3), 6, 30, [0], true, 1.5);
+  el('e_pa', 'Painting A', rectPts(21.5, -3.75, 3, 0.2), 7, 25, [2], true, 1);
+  el('e_pb', 'Painting B', rectPts(30, -3.75, 3, 0.2), 5, 20, [2], true, 1);
   el('e_sc', 'Sculpture', roundPts(23, 1.5, 1.4), 9, 40);
   el('e_vi', 'Vitrine', [[33, 1.5], [34.2, 2], [34.2, 4.2], [33, 4.6]], 6, 20, [0, 2, 3]);
-  el('e_vid', 'Video', rectPts(35.8, 10, 0.2, 3), 8, 60, [3]);
+  el('e_vid', 'Video', rectPts(35.8, 10, 0.2, 3), 8, 60, [3], true, 2.5);
   el('e_arch', 'Archive box', rectPts(42.5, 1, 1.6, 2.4), 6, 30);
   el('e_floor', 'Floor text', rectPts(31.5, 11.5, 2.5, 1.5), 4, 10, [], false);
   d.arrows.push({ id: 'a_1', x1: 2, y1: 5, x2: 11, y2: 4 });
@@ -86,7 +86,7 @@ function normalize(d) {
     const pts = e.pts.map(p => [+p[0] || 0, +p[1] || 0]);
     const views = (Array.isArray(e.views) ? e.views : []).map(v => v | 0).filter((v, i, a) => v >= 0 && v < pts.length && a.indexOf(v) === i);
     return syncEl({ id: String(e.id || uid('e')), name: String(e.name || 'Element'), pts, views,
-      attr: num(e.attr, 5, 1, 10), dwell: num(e.dwell, 20, 0, 3600), solid: e.solid !== false });
+      attr: num(e.attr, 5, 1, 10), dwell: num(e.dwell, 20, 0, 3600), near: num(e.near, 0, 0, 50), solid: e.solid !== false });
   });
   n.arrows = (Array.isArray(d.arrows) ? d.arrows : []).filter(Boolean).map(a => ({ id: String(a.id || uid('a')), x1: +a.x1 || 0, y1: +a.y1 || 0, x2: +a.x2 || 0, y2: +a.y2 || 0 }));
   const dids = new Set(n.doors.map(x => x.id));
@@ -177,8 +177,9 @@ function lookPoint(e, x, y) {
 const noticeR = e => 1.2 + e.attr * 0.4;
 // how many people can look at it comfortably at once
 const capacity = e => {
-  if (!hasViews(e)) return Math.max(2, Math.round((polyEdges(e.pts).reduce((t, E) => t + E.L, 0) + 5.6) / 0.75));
-  return Math.max(2, Math.round(viewEdges(e).reduce((t, E) => t + E.L + 1, 0) / 0.75));
+  const r = (e.near || 0) + 0.45;   // the line people stand on
+  if (!hasViews(e)) return Math.max(2, Math.round((polyEdges(e.pts).reduce((t, E) => t + E.L, 0) + 2 * Math.PI * r) / 0.75));
+  return Math.max(2, Math.round(viewEdges(e).reduce((t, E) => t + E.L + 2 * r, 0) / 0.75));
 };
 
 const roomById = id => doc.rooms.find(r => r.id === id);
@@ -469,14 +470,15 @@ function elField(nv, el) {
   const key = 'e' + el.id;
   let f = nv.fields.get(key);
   if (!f) {
-    const reach = el.solid ? 0.9 : 0.4;
-    if (!hasViews(el)) f = buildField(nv, (x, y) => elDist(el, x, y) <= reach);
+    // people stand in a band: no closer than the minimal viewing distance, about 0.9 m deep
+    const lo = el.near || 0, reach = lo + (el.solid || lo > 0 ? 0.9 : 0.4);
+    if (!hasViews(el)) f = buildField(nv, (x, y) => { const d = elDist(el, x, y); return d <= reach && d >= lo - 0.05; });
     else {
       // stand in front of a viewing side
       const E = viewEdges(el);
       f = buildField(nv, (x, y) => {
         if (el.solid && pip(x, y, el.pts)) return false;
-        for (const q of E) { const s = segDist(x, y, q.ax, q.ay, q.bx, q.by); if (s.d <= reach + 0.1 && (x - s.x) * q.nx + (y - s.y) * q.ny > -0.01) return true; }
+        for (const q of E) { const s = segDist(x, y, q.ax, q.ay, q.bx, q.by); if (s.d <= reach + 0.1 && s.d >= lo - 0.05 && (x - s.x) * q.nx + (y - s.y) * q.ny > -0.01) return true; }
         return false;
       });
     }
@@ -746,9 +748,15 @@ function stepAgent(a, dt, cur) {
   const bl = Math.min(1, dt * 5);
   a.vx += (tvx - a.vx) * bl; a.vy += (tvy - a.vy) * bl;
   const nx = a.x + a.vx * dt, ny = a.y + a.vy * dt;
-  if (walkAt(nv, nx, ny)) { a.x = nx; a.y = ny; }
-  else if (walkAt(nv, nx, a.y)) { a.x = nx; a.vy *= 0.5; }
-  else if (walkAt(nv, a.x, ny)) { a.y = ny; a.vx *= 0.5; }
+  // while looking, the crowd can shuffle you along the viewing band but not push you off it
+  let ok = (x, y) => walkAt(nv, x, y);
+  if (a.state === 'dwell') {
+    const el = elById(a.look), f = el && nv.els.includes(el) ? elField(nv, el) : null;
+    if (f && distAt(nv, f, a.x, a.y) === 0) ok = (x, y) => walkAt(nv, x, y) && distAt(nv, f, x, y) === 0;
+  }
+  if (ok(nx, ny)) { a.x = nx; a.y = ny; }
+  else if (ok(nx, a.y)) { a.x = nx; a.vy *= 0.5; }
+  else if (ok(a.x, ny)) { a.y = ny; a.vx *= 0.5; }
   else { a.vx *= 0.2; a.vy *= 0.2; }
   if (a.state === 'walk') {
     const v = Math.hypot(a.vx, a.vy);
@@ -791,7 +799,7 @@ function separation() {
         const dx = a.x - b.x, dy = a.y - b.y, d2 = dx * dx + dy * dy;
         if (d2 < RR * RR) {
           if (d2 < 1e-8) { a.sx += Math.random() - 0.5; a.sy += Math.random() - 0.5; continue; }
-          const d = Math.sqrt(d2), f = (RR - d) / RR;
+          const d = Math.sqrt(d2), f = (RR - d) / RR * (b.state === 'dwell' && a.state !== 'dwell' ? 0.45 : 1);   // slip past people who are looking
           a.sx += dx / d * f * 1.4; a.sy += dy / d * f * 1.4;
         }
       }
@@ -974,6 +982,21 @@ function drawScene(c, v, W, H, o) {
       // reach: a soft band around it
       c.save(); c.strokeStyle = 'rgba(0,0,0,0.045)'; c.lineJoin = 'round'; c.lineWidth = noticeR(e) * 2; elPath(c, e); c.stroke(); c.restore();
       c.save(); c.translate(6 * u, 6 * u); elPath(c, e); c.fillStyle = ACCENT; c.fill(); c.restore();
+      if (e.near > 0) {   // where viewing starts
+        c.save(); c.setLineDash([4 * u, 4 * u]); c.strokeStyle = '#000'; c.lineWidth = 1 * u; c.lineCap = 'butt';
+        c.beginPath();
+        for (const E of viewEdges(e)) {
+          const ox = E.nx * e.near, oy = E.ny * e.near;
+          c.moveTo(E.ax + ox, E.ay + oy); c.lineTo(E.bx + ox, E.by + oy);
+          if (!hasViews(e)) {   // round the outside corners
+            const nx2 = polyEdges(e.pts)[(E.i + 1) % e.pts.length];
+            const a0 = Math.atan2(E.ny, E.nx), a1 = Math.atan2(nx2.ny, nx2.nx);
+            let da = a1 - a0; while (da > Math.PI) da -= 2 * Math.PI; while (da < -Math.PI) da += 2 * Math.PI;
+            if (Math.abs(da) > 0.01) { c.moveTo(E.bx + ox, E.by + oy); c.arc(E.bx, E.by, e.near, a0, a0 + da, da < 0); }
+          }
+        }
+        c.stroke(); c.restore();
+      }
     }
     c.save();
     if (e.solid) { c.shadowColor = 'rgba(0,0,0,0.2)'; c.shadowBlur = 12 * o.sh; c.shadowOffsetY = 6 * o.sh; c.fillStyle = '#fff'; }
@@ -1428,7 +1451,7 @@ canvas.addEventListener('pointerdown', e => {
   if (tool === 'arrow') { drag = { type: 'newArrow', x1: snapv(wx), y1: snapv(wy), x2: snapv(wx), y2: snapv(wy) }; return; }
 
   if (tool === 'element') {
-    const el = syncEl({ id: uid('e'), name: 'Element ' + (doc.elements.length + 1), pts: rectPts(snapv(wx), snapv(wy), 2, 1), views: [], attr: 5, dwell: 20, solid: true });
+    const el = syncEl({ id: uid('e'), name: 'Element ' + (doc.elements.length + 1), pts: rectPts(snapv(wx), snapv(wy), 2, 1), views: [], attr: 5, dwell: 20, near: 0, solid: true });
     if (!roomAt(el.x, el.y)) toast('Place elements inside a room so people can find them');
     doc.elements.push(el);
     invalidate();
@@ -1704,6 +1727,7 @@ const FMT = {
   pct: v => Math.round(v * 100) + '%',
   int: v => String(Math.round(v)),
   sec: v => Math.round(v) + ' S',
+  m: v => (v ? Number(v.toFixed(1)) + ' M' : 'NONE'),
 };
 const fieldText = (label, key, val) => `<div class="field"><div class="field-top"><span class="label">${label}</span></div><input type="text" data-k="${key}" value="${esc(val)}" maxlength="40"></div>`;
 const fieldNum = (label, key, val, min, max, step, unit) => `<div class="field"><div class="field-top"><span class="label">${label}</span><span class="val muted">${unit || ''}</span></div><input type="number" data-k="${key}" value="${val}" min="${min}" max="${max}" step="${step}"></div>`;
@@ -1752,10 +1776,12 @@ function buildInspector() {
     h += `<div class="field"><div class="field-top"><span class="label">VIEWED FROM</span><span class="val">${hasViews(o) ? o.views.length + (o.views.length > 1 ? ' SIDES' : ' SIDE') : 'ALL SIDES'}</span></div>${hasViews(o) ? '<div class="seg"><button class="btn" data-act="allsides">ALL SIDES</button></div>' : ''}</div>`;
     h += fieldRange('ATTRACTION', 'attr', o.attr, 1, 10, 1, 'int');
     h += fieldRange('VIEWING TIME', 'dwell', o.dwell, 0, 300, 5, 'sec');
+    h += fieldRange('MIN DISTANCE', 'near', o.near || 0, 0, 8, 0.1, 'm');
     h += fieldSeg('BLOCKS WALKING', 'solid', o.solid, [['true', 'YES'], ['false', 'NO']]);
     h += `<div class="stats">${stat('Looking now', 0, 'el-now')}${stat('Visits', 0, 'el-visits')}${stat('Avg look', '–', 'el-avg')}${stat('Reach', noticeR(o).toFixed(1) + ' m', 'el-reach')}${stat('Fits', capacity(o) + ' people', 'el-cap')}</div>`;
     h += `<p class="note">Drag a corner to reshape. Drag a + to add a corner. Double-click a corner to remove it. Click VIEW next to a side to make it a viewing side: people stand in front of it and look at it.</p>`;
     h += `<p class="note">Attraction sets how far away people notice it and how many go and look. The grey band shows its reach. When it's full, people skip it.</p>`;
+    h += `<p class="note">Min distance keeps people back, like a screen or a big canvas. The dashed line shows where they start standing. If there's no room for that, people skip it.</p>`;
   }
   if (kind === 'label') {
     h += `<div class="field"><div class="field-top"><span class="label">TEXT</span><span class="val muted">ENTER = NEW LINE</span></div><textarea data-k="text" rows="3" maxlength="400">${esc(o.text)}</textarea></div>`;
@@ -1802,6 +1828,7 @@ $('#inspector').addEventListener('input', e => {
     if (show) show.textContent = FMT[show.dataset.fmt](o[k]);
     if (k === 'attr') { const r = $('#inspector [data-live="el-reach"]'); if (r) r.textContent = noticeR(o).toFixed(1) + ' m'; }
     const cp = $('#inspector [data-live="el-cap"]'); if (cp && o.w) cp.textContent = capacity(o) + ' people';
+    if (k === 'near') needsRender = true;
   }
   invalidate();
 });
